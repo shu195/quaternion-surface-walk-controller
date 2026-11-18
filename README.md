@@ -88,3 +88,11 @@ python test_token_rewiring.py
 | [`test_system_solving.py`](test_system_solving.py) | 4D nonlinear system solving & rank-4 algebraic limit check |
 | [`test_surface_walk.py`](test_surface_walk.py) | Driven closed-loop surface walk convergence & rank test |
 | [`paper.tex`](paper.tex) / [`paper.pdf`](paper.pdf) | Full 5-page technical paper |
+
+---
+
+## Author & License
+
+- **Author**: `shu195`
+- **License**: [MIT](LICENSE)
+
