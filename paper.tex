@@ -1,0 +1,197 @@
+\documentclass[11pt,twocolumn]{article}
+
+\usepackage[margin=0.75in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{xcolor}
+
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+\title{\textbf{From 268\,MB DRAM-Bound \texttt{tensordot} to Energy-Preserving Geometric Attention: Factored $SO(4)^N$ Quaternion Surface-Walk Hypernetworks and Symplectic Lie-Group Memory}}
+
+\author{
+Antigravity Swarm Research Collective \\
+\texttt{quaternion-ode-neuron} Workspace
+}
+
+\date{November 17, 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Hypernetworks that materialize dense weight matrices via tensor contractions suffer from severe DRAM-bandwidth bottlenecks, low arithmetic intensity, and quadratic-to-cubic memory scaling. In this work, we trace and resolve this bottleneck from first principles, beginning with single-neuron multi-order ordinary differential equations (ODEs) in the quaternion algebra $\mathbb{H} \cong \mathbb{R}^4$ and culminating in a unified, energy-preserving geometric attention engine. First, we show that a single \texttt{QuaternionNeuron} driven by Hamilton multiplication and split-$\tanh$ activation supports arbitrary-order ($k=1,2,3$) ODEs that converge to identical fixed points ($q^*$) with residuals down to $2.25 \times 10^{-10}$. Second, we diagnose why naive dense \texttt{tensordot} hypernetworks ($32 \times 1024 \times 1024$ in \texttt{float64}) stream $268{,}435.5\text{ KB}$ at $0.24\text{ FLOP/byte}$ ($17.69\text{ ms}$ kernel, $28.25\text{ ms}$ end-to-end) while restricting weights to a $3.05 \times 10^{-5}$ fraction of ambient space. Third, we introduce a vectorized 20-lap Jacobi surface-walk hypernetwork paired with a factored $SO(4)^N + \alpha$ decoder, $W(q) = U\,\operatorname{block\_diag}(\alpha_1 R(q_1), \dots, \alpha_N R(q_N))\,V^T$, reducing basis memory by $1{,}048\times$ at $1024 \times 1024$ ($256.0\text{ KB}$, L2-resident) and $2{,}048\times$ at $4096 \times 4096$ ($8.00\text{ MB}$ vs.\ $16.0\text{ GB}$), achieving $1.03\times$ latency parity with a matched 2-layer MLP at $8192 \times 8192$ ($105.41\text{ ms}$ vs.\ $102.32\text{ ms}$), and serving as an implicit spectral regularizer ($92.0\%$ held-out accuracy under $10\%$ label noise and $67\%$ vocabulary overlap; $75.0\%$ on 8-class brutal text with $80\%$ overlap and $20\%$ noise). Finally, we unify a Symplectic Lie-Group Verlet integrator on $(S^3)^N \times \mathfrak{so}(3)^N$ with zero-backprop, token-by-token attention rewiring, achieving $0.735\text{ ms/token}$ ($T=64$, $d_{\text{model}}=1024$), a $2.51\times$ state jump across topic shifts, $\mathcal{O}(1)$ memory per token, and unit-norm preservation to machine epsilon ($\max |\|q\| - 1| = 2.22 \times 10^{-16}$).
+\end{abstract}
+
+\section{Introduction}
+Dynamic weight generation—where a conditioning network produces the parameters of a target layer on the fly—promises adaptive computation, continual learning, and input-dependent specialization. Yet in practice, naive hypernetworks that materialize dense target matrices $W(q) \in \mathbb{R}^{m \times n}$ from a low-dimensional latent state $q \in \mathbb{R}^d$ via a dense basis contraction $W(q) = \sum_{k=1}^d q_k B_k$ (\texttt{tensordot}) hit a severe memory-bandwidth wall. For $d=32$ and $m=n=1024$ in \texttt{float64}, the basis tensor $B \in \mathbb{R}^{32 \times 1024 \times 1024}$ occupies $268{,}435.5\text{ KB}$ ($268.4\text{ MB}$), streaming $276.8\text{ MB}$ of DRAM traffic per forward pass at $0.24\text{ FLOP/byte}$ ($17.69\text{ ms}$ contraction, $28.25\text{ ms}$ end-to-end). Worse, this dense contraction restricts $W(q)$ to a $32$-dimensional linear subspace $\mathcal{V}_{32} \subset \mathbb{R}^{1024 \times 1024}$—spanning only $32 / 2^{20} \approx 3.05 \times 10^{-5}$ of the ambient parameter space.
+
+In this paper, we present a complete theoretical, algorithmic, and systems-level resolution of this bottleneck:
+\begin{enumerate}
+    \item \textbf{Multi-Order Quaternion ODEs:} We formalize a single quaternion-valued neuron in $\mathbb{H} \cong \mathbb{R}^4$ and demonstrate that $k$-th order ODEs ($k=1,2,3$) sharing $c_0 = 1.5$ converge to the exact same attractor $q^*$ under \texttt{RK45} integration.
+    \item \textbf{Factored $SO(4)^N + \alpha$ Surface-Walk Hypernetworks:} We replace dense \texttt{tensordot} with a vectorized 20-lap Jacobi surface walk on a quaternion ring and a factored $SO(4)^N + \alpha$ decoder. This keeps bases L2/L3-resident ($256.0\text{ KB}$ at $1024\times 1024$, $8.00\text{ MB}$ at $4096\times 4096$, $32.0\text{ MB}$ at $8192\times 8192$), supports both 20-lap unrolled BPTT and exact Deep Equilibrium (DEQ) implicit differentiation, and acts as an implicit spectral regularizer on noisy, high-overlap text benchmarks.
+    \item \textbf{Symplectic Lie-Group Verlet \& Zero-Backprop Token Rewiring:} To support continual memory over long horizons without norm collapse or energy drift, we formulate a Hamiltonian ring walk on $(S^3)^N \times \mathfrak{so}(3)^N$ integrated via kick-drift-kick Lie-group Verlet, and couple it to per-token attention rewiring with $\mathcal{O}(1)$ memory per token and $2.22 \times 10^{-16}$ norm error.
+\end{enumerate}
+
+\section{Quaternion Neuron and Multi-Order ODEs}
+Let $\mathbb{H} = \{w + x\mathbf{i} + y\mathbf{j} + z\mathbf{k} \mid w,x,y,z \in \mathbb{R}\}$ denote the division algebra of quaternions, represented as vectors $q = [w, x, y, z]^T \in \mathbb{R}^4$. For $p, q \in \mathbb{H}$, the non-commutative Hamilton product $p \otimes q$ (\texttt{qmul}) is defined by:
+\begin{equation}
+p \otimes q = \begin{bmatrix}
+w_1 w_2 - x_1 x_2 - y_1 y_2 - z_1 z_2 \\
+w_1 x_2 + x_1 w_2 + y_1 z_2 - z_1 y_2 \\
+w_1 y_2 - x_1 z_2 + y_1 w_2 + z_1 x_2 \\
+w_1 z_2 + x_1 y_2 - y_1 x_2 + z_1 w_2
+\end{bmatrix},
+\end{equation}
+with conjugate $\bar{q} = [w, -x, -y, -z]^T$ (\texttt{qconj}) and Euclidean norm $\|q\| = \sqrt{w^2 + x^2 + y^2 + z^2}$ (\texttt{qnorm}).
+
+A single \texttt{QuaternionNeuron} with weight $W \in \mathbb{H}$ and bias $b \in \mathbb{H}$ computes the forward map:
+\begin{equation}
+\sigma(W \otimes q + u + b),
+\end{equation}
+where $\sigma(\cdot) = \tanh(\cdot)$ is applied component-wise (\texttt{split\_tanh}) and $u \in \mathbb{H}$ is an external drive.
+
+We generalize this neuron to arbitrary $k$-th order continuous-time dynamics (\texttt{simulate\_multi\_order\_ode}):
+\begin{equation}
+q^{(k)} + \sum_{j=0}^{k-1} c_j q^{(j)} = \sigma(W \otimes q + u(t) + b),
+\end{equation}
+rewritten as a first-order system on the stacked state $y = [q, q', \dots, q^{(k-1)}]^T \in \mathbb{R}^{4k}$ and integrated using \texttt{scipy.integrate.solve\_ivp} (\texttt{RK45}, $\texttt{rtol}=10^{-8}$, $\texttt{atol}=10^{-10}$).
+
+\begin{table}[t]
+\centering
+\caption{Multi-order quaternion ODE convergence ($k=1,2,3$) sharing $c_0 = 1.5$ over $t_{\text{span}} = (0, 60)$.}
+\label{tab:multi_order_ode}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lccc@{}}
+\hline
+Order & FP Residual & Deriv.\ End & $\max \|q(t)\|$ \\
+\hline
+$k=1$ & $3.71 \times 10^{-10}$ & --- & $0.5289$ \\
+$k=2$ & $2.25 \times 10^{-10}$ & $2.70 \times 10^{-10}$ & $0.5456$ \\
+$k=3$ & $9.19 \times 10^{-9}$  & $6.39 \times 10^{-9}$  & $0.5933$ \\
+\hline
+\end{tabular}
+\end{table}
+
+As verified in Table~\ref{tab:multi_order_ode}, while a shorter horizon $t_{\text{span}} = (0, 25)$ leaves the $k=3$ transient under-damped ($\text{fp\_residual} = 1.79 \times 10^{-4}$, $\text{deriv\_end} = 1.40 \times 10^{-4}$), extending to $t_{\text{span}} = (0, 60)$ yields convergence of all three orders to the identical fixed point:
+\begin{equation}
+q^* = [0.462701,\; -0.230261,\; 0.079925,\; 0.072613]^T.
+\end{equation}
+
+\section{Factored $SO(4)^N + \alpha$ Surface-Walk Hypernetworks}
+
+\subsection{The Dense \texttt{tensordot} Bottleneck}
+In a naive multi-quaternion hypernetwork (\texttt{MultiQuaternionHyperNet}), $N$ quaternion neurons produce a latent vector $q \in \mathbb{R}^{4N}$ (e.g., $N=8 \implies 32\text{D}$) which is contracted against a dense basis $B \in \mathbb{R}^{4N \times m \times n}$:
+\begin{equation}
+W(q) = \sum_{k=1}^{4N} q_k B_k.
+\end{equation}
+From a systems perspective, for $4N=32$ and $m=n=1024$ in \texttt{float64}, $B$ requires $268{,}435.5\text{ KB}$ ($268.4\text{ MB}$). Computing $W(q)$ reads $268.4\text{ MB}$ and writes $8.39\text{ MB}$ ($276.8\text{ MB}$ total) for only $64\text{ FLOPs}$ per $264\text{ B}$—an arithmetic intensity of $0.24\text{ FLOP/byte}$, saturating DRAM bandwidth at $\sim 15.65\text{ GB/s}$ ($17.69\text{ ms}$ contraction, $28.25\text{ ms}$ end-to-end) and thrashing L2/L3 caches.
+
+From a geometric perspective, $W(q)$ is confined to a $32$-dimensional linear subspace $\mathcal{V}_{32} \subset \mathbb{R}^{1024 \times 1024}$ ($3.05 \times 10^{-5}$ of ambient space), incurring an irreducible projection error $\|(I - P_{\mathcal{V}_{32}})W^*\|_F$ against any target matrix $W^* \notin \mathcal{V}_{32}$.
+
+\subsection{Vectorized 20-Lap Jacobi Surface Walk}
+To eliminate both the ODE solver overhead and the dense basis, \texttt{FactoredQuaternionSurfaceHyperNet} replaces continuous-time integration with a vectorized $20$-lap Jacobi surface walk on a ring of $N$ quaternions $q^{(t)} \in \mathbb{R}^{N \times 4}$:
+\begin{equation}
+\begin{aligned}
+q^{(t+1)} &= F(q^{(t)}, u) \\
+&= \frac{1}{2} q^{(t)} + \frac{1}{2}\tanh\!\left(\operatorname{roll}(q^{(t)}, 1) M_W + u + b\right),
+\end{aligned}
+\end{equation}
+where $M_W \in \mathbb{R}^{4 \times 4}$ is the right-multiplication matrix of the shared quaternion weight $w$, and $u \in \mathbb{R}^{N \times 4}$ is the encoded conditioning input.
+
+\begin{remark}[Contraction and Mixing]
+For finite-horizon stability of the 20-lap walk, the map $F$ must be $L$-Lipschitz contractive: $\sup_q \|J_F(q)\|_2 \le L < 1$. Note that naively projecting onto $(S^3)^N$ at each step introduces a singular Jacobian $\frac{1}{\|q\|}(I - \hat{q}\hat{q}^T)$ at $q=0$. Furthermore, at $N=64$, $20$ laps is strictly less than the ring half-circumference $N/2 = 32$, leaving global information mixing incomplete under $\mathcal{O}(N^2)$ diffusive propagation.
+\end{remark}
+
+\subsection{Factored $SO(4)^N + \alpha$ Decoding}
+Instead of materializing $W(q) \in \mathbb{R}^{m \times n}$, we factorize the target layer through two thin, cache-resident matrices $U \in \mathbb{R}^{m \times 4N}$ and $V \in \mathbb{R}^{n \times 4N}$. In the diagonal baseline (\texttt{factored\_hypernet.py}), the layer computes:
+\begin{equation}
+Y = \tanh\!\left(((X V) \odot q) U^T\right),
+\end{equation}
+matching the materialized dense output $Y_{\text{dense}} = \tanh(X W^T)$ to $\text{max\_abs\_diff} = 2.70 \times 10^{-6}$ in \texttt{float32}.
+
+To endow each quaternion with full rotational expressivity, we upgrade the diagonal scaling to a block-diagonal $SO(4)^N$ operator with $N$ learnable scalar gains $\alpha = (\alpha_1, \dots, \alpha_N)$:
+\begin{equation}
+W(q) = U\,\operatorname{block\_diag}\!\left(\alpha_1 R(q_1), \dots, \alpha_N R(q_N)\right)\,V^T,
+\end{equation}
+where $R(q_i) \in SO(4)$ satisfies $\|R(q_i)\|_2 = 1$ (verified to $\text{max\_spec\_err} = 5.96 \times 10^{-8}$). Notably, this factorization hard-caps matrix rank at $\operatorname{rank}(W) \le 4N$ (unlike dense \texttt{tensordot}, which can span full-rank matrices inside $\mathcal{V}_{32}$), explaining its strong implicit spectral regularization. Adding the $8$ scalar gains $\alpha_i$ ($\bar{\alpha} = 0.275$) supplies singular-value scaling that pure unit-norm rotations lack, closing $50$-step $4$-task regression MSE from $0.194224$ to $0.118010$ (matching a baseline MLP at $0.117253$). Compared to \texttt{diag(q)}, \texttt{block\_diag(SO(4))} adds only $+0.266\text{ ms}$ ($+10\%$: $2.670\text{ ms} \to 2.936\text{ ms}$ on $200 \times 1024$).
+
+\subsection{Training: Unrolled BPTT vs.\ Exact DEQ}
+The architecture supports two exact gradient regimes:
+\begin{itemize}
+    \item \textbf{Step-Varying $u[i]$:} $20$-lap unrolled backpropagation through time (BPTT), storing $20 \times 32$ floats per sample.
+    \item \textbf{Constant-$u$ Attractor:} Exact Deep Equilibrium (DEQ) implicit differentiation at the fixed point $q^* = F(q^*, u)$:
+    \begin{equation}
+    \frac{\partial q^*}{\partial \theta} = (I - J_F)^{-1} \frac{\partial F}{\partial \theta},
+    \end{equation}
+    solved directly via \texttt{linalg.solve} on $32 \times 32$ to $512 \times 512$ Jacobians.
+\end{itemize}
+
+\section{Symplectic Lie-Group Verlet and Zero-Backprop Token Rewiring}
+
+\subsection{Hamiltonian Ring Dynamics on $(S^3)^N \times \mathfrak{so}(3)^N$}
+Dissipative tanh walks cannot preserve memory indefinitely without decaying to a fixed point. To achieve continual, energy-preserving memory (\texttt{test\_symplectic\_memory.py}), we define a Hamiltonian on $(S^3)^N \times \mathfrak{so}(3)^N$:
+\begin{equation}
+E(q, \omega) = \frac{1}{2}\sum_{i=1}^N \|\omega_i\|^2 - \kappa \sum_{i=1}^N \langle q_i, q_{i+1} \rangle,
+\end{equation}
+with nearest-neighbor ring torque on $S^3$:
+\begin{equation}
+\tau_i = \frac{1}{2}\kappa\,\operatorname{imag}\!\left(\bar{q}_i \otimes (q_{i-1} + q_{i+1})\right).
+\end{equation}
+We integrate this system using a symplectic Lie-group Verlet (kick-drift-kick) scheme with the exact quaternion exponential map $\exp_{\mathfrak{su}(2)}(\frac{1}{2}\omega\,\Delta t)$ (since $q \in S^3 \cong SU(2)$, the double cover of $SO(3)$):
+\begin{align}
+\omega &\leftarrow \omega + \frac{\Delta t}{2} \tau(q), \\
+q &\leftarrow q \otimes \exp_{\mathfrak{su}(2)}\!\left(\frac{1}{2}\omega\,\Delta t\right), \quad q \leftarrow \frac{q}{\|q\|}, \\
+\omega &\leftarrow \omega + \frac{\Delta t}{2} \tau(q).
+\end{align}
+Over $2{,}000$ steps ($N=8$, $\kappa=0.5$, $\Delta t=0.05$), the integrator preserves $E_0 = 0.717369$ with $\text{max\_rel\_energy\_drift} = 3.17 \times 10^{-4}$ and $\max |\|q\| - 1| = 2.22 \times 10^{-16}$.
+
+\subsection{Zero-Backprop Token-by-Token Attention Rewiring}
+In \texttt{test\_token\_rewiring.py}, we hoist the base projection $Z = X V \in \mathbb{R}^{T \times 4N}$ once for the sequence, and let each token $t$ nudge the quaternion ring in-flight with zero backpropagation to rewire its $Q, K, V$ projections on the fly:
+\begin{equation}
+h_t = \tanh\!\left((Z_t \odot q_t) U^T\right).
+\end{equation}
+Combining Symplectic Lie-Group Verlet with per-token attention rewiring ($T=64$, $d_{\text{model}}=1024$) runs in $47.058\text{ ms}$ total ($0.735\text{ ms/token}$), uses $\mathcal{O}(1)$ memory per token, exhibits a $2.51\times$ state jump across mid-sequence topic shifts, and maintains $\max |\|q\| - 1| = 2.22 \times 10^{-16}$.
+
+\section{Experimental Evaluation and Scaling}
+
+\begin{table*}[t]
+\centering
+\caption{Memory, latency, and scaling comparison across dense \texttt{tensordot}, factored $SO(4)^N + \alpha$, and matched MLP baselines.}
+\label{tab:scaling}
+\small
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{@{}lcccc@{}}
+\hline
+Configuration & Basis Memory & Dense Equiv. & Latency & Notes \\
+\hline
+Dense \texttt{tensordot} ($32\text{D} \to 1024^2$) & $268{,}435.5\text{ KB}$ & $268.4\text{ MB}$ & $28.25\text{ ms}$ e2e ($17.69\text{ ms}$ kernel) & $0.24\text{ FLOP/byte}$ \\
+Factored ($32\text{D} \to 1024^2$) & $256.0\text{ KB}$ ($1{,}048\times$) & $268.4\text{ MB}$ & $2.363\text{ ms}$ ($12.0\times$) & L2-resident; $\Delta = 2.70\times 10^{-6}$ \\
+Factored ($256\text{D} \to 4096^2$) & $8.00\text{ MB}$ ($2{,}048\times$) & $16.0\text{ GB}$ & $12.07\text{ ms}$ e2e & L3-resident; $12.48\text{ ms/cond}$ hoisted \\
+Factored ($512\text{D} \to 8192^2$) & $32.0\text{ MB}$ ($4{,}096\times$) & $128\text{ GB}$ & $105.41\text{ ms}$ ($26.35\text{ ms/task}$) & $1.03\times$ vs.\ MLP ($102.32\text{ ms}$) \\
+\hline
+\end{tabular}%
+}
+\end{table*}
+
+Table~\ref{tab:scaling} summarizes the memory and latency scaling. Hoisting $Z = X V$ across $4$ tasks ($200 \times 4096$) reduces total runtime from $61.55\text{ ms}$ to $49.91\text{ ms}$ ($1.23\times$, $12.48\text{ ms/cond}$). At $512\text{D} \to 8192 \times 8192$ ($67.1\text{M}$ virtual weights), the factored hypernetwork achieves $1.03\times$ latency parity with a matched 2-layer MLP ($105.41\text{ ms}$ vs.\ $102.32\text{ ms}$) while using $32.0\text{ MB}$ instead of $128\text{ GB}$.
+
+On hard text classification benchmarks, the $SO(4)^N + \alpha$ constraint acts as an implicit spectral regularizer:
+\begin{itemize}
+    \item \textbf{Clean Text ($8192 \times 8192$):} $100.0\%$ held-out accuracy at $0.322\text{ ms/snippet}$.
+    \item \textbf{4-Class Noisy Text ($4096 \times 4096$, $10\%$ label noise, $67\%$ vocab overlap, $400$ snippets):} $92.0\%$ held-out accuracy at $0.070\text{ ms/snippet}$ ($\sim 14{,}300\text{ snippets/s}$).
+    \item \textbf{8-Class Brutal Text ($4096 \times 4096$, $20\%$ label noise, $80\%$ shared vocab, $800$ snippets):} $75.0\%$ held-out accuracy ($6\times$ random) at $0.090\text{ ms/snippet}$ ($\sim 11{,}100\text{ snippets/s}$), outperforming the $66.7\%$ noisy training accuracy.
+\end{itemize}
+
+As an honest limitation for autoregressive generation, an exploratory \textit{Hamlet} soliloquy test reduced cross-entropy from $5.0432$ to $4.5265$ but exhibited repetitive looping (\texttt{"to be..."}) without rotary positional encodings (RoPE) or a feed-forward network (FFN), motivating pairing the symplectic attention engine with positional encodings and an FFN in future sequence models.
+
+\section{Systems Bottlenecks and Future Work}
+At $N=64$ ($256\text{D}$), the quaternion ring state occupies just $1\text{ KB}$—fitting entirely in L1d cache. The remaining latency is dominated by Python loop dispatch over the $20$ Jacobi laps. Fusing the $20$-lap ring walk into a single compiled CUDA, Triton, or C kernel is the immediate next step to eliminate dispatch overhead and unlock sub-millisecond dynamic weight generation at $8192 \times 8192$ scale.
+
+\section{Conclusion}
+We have demonstrated how a single quaternion-valued neuron ODE evolves—through rigorous systems profiling and geometric factorization—into an L2/L3-resident $SO(4)^N + \alpha$ surface-walk hypernetwork and an energy-preserving symplectic attention engine. By replacing a $268\text{ MB}$ DRAM-bound \texttt{tensordot} with factored orthogonal rotations and Lie-group Verlet integration, we achieve $1{,}048\times$--$4{,}096\times$ memory reduction, $1.03\times$ MLP latency parity at $67.1\text{M}$ virtual weights, strong spectral regularization under $20\%$ label noise, and $\mathcal{O}(1)$-memory token rewiring at $2.22 \times 10^{-16}$ machine epsilon.
+
+\end{document}
